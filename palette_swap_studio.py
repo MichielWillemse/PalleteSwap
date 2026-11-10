@@ -9,7 +9,7 @@ Layout
 +--------------------------------------------------------------------+
 | Color mapping (left column)        | New palette preview            |
 |  Original        New palette       | (right column, about double    |
-|  R G B [sw] | [sw] R G B [esw]    |  the dimensions of the         |
+|  R G B [sw] | [sw] R G B [esw]RGB |  the dimensions of the         |
 |  up/dn/x/grad ...                  |  original picture)             |
 |  [+ Add color]  Palette: [v] Gradient: [v]                         |
 | +------------------------------+   |                                |
@@ -31,7 +31,8 @@ right, about double those dimensions.
 
 Gradients: press the grad button on a row to turn its new color into a
 gradient across the image. The row's new color is the gradient start;
-click the small end swatch that appears next to it to pick the end color.
+the end color gets its own swatch and R/G/B fields next to it (click the
+swatch to pick a color, or type R/G/B values 0-255).
 The direction is chosen once for all gradient rows with the "Gradient"
 dropdown below the mapping table, and the preview shows the result.
 Gradient rows are stored in palettes.json as
@@ -151,9 +152,10 @@ class MappingRow:
     """One row of the color-mapping block.
 
     Grid columns: 0-2 original R,G,B | 3 original square | 4 new square |
-    5-7 new R,G,B | 8 gradient end square (gradient rows only) |
-    9 order/remove/gradient buttons. All rows share one grid, so
-    everything stays aligned automatically.
+    5-7 new R,G,B | 8 gradient end square | 9-11 gradient end R,G,B |
+    12 order/remove/gradient buttons (the end square/fields are only
+    gridded on gradient rows). All rows share one grid, so everything
+    stays aligned automatically.
     """
 
     def __init__(self, app, parent, grid_row, orig, new, end=None):
@@ -163,7 +165,6 @@ class MappingRow:
         self.orig = orig  # (r, g, b) or None when no image is loaded
         self.updating = False
         self.gradient = end is not None
-        self._end = tuple(int(v) for v in end[:3]) if end else (255, 255, 255)
         self._grad_shown = False
         self._widgets = []
 
@@ -203,15 +204,26 @@ class MappingRow:
             put(entry, 5 + i, padx=1, pady=1)
             self.new_vars.append(var)
 
-        # Gradient end square (only gridded while this row is a gradient)
+        # Gradient end square + editable R,G,B fields (only gridded
+        # while this row is a gradient)
         self.end_swatch = tk.Label(parent, width=3, height=1,
                                    relief="groove", cursor="hand2")
         self._widgets.append(self.end_swatch)
         self.end_swatch.bind("<Button-1>", lambda _e: self.pick_end_color())
+        self.end_vars = []
+        self.end_entries = []
+        for _i in range(3):
+            var = tk.StringVar(value="255")
+            entry = tk.Entry(parent, width=4, textvariable=var,
+                             justify="center")
+            var.trace_add("write", self._on_end_rgb_typed)
+            self.end_vars.append(var)
+            self.end_entries.append(entry)
+            self._widgets.append(entry)
 
         # Order, remove and gradient-toggle buttons
         btns = tk.Frame(parent)
-        put(btns, 9, padx=(6, 0))
+        put(btns, 12, padx=(6, 0))
         tk.Button(btns, text="\u25b2", relief="flat",
                   command=lambda: app.move_new_color(self, -1)
                   ).pack(side="left")
@@ -225,7 +237,7 @@ class MappingRow:
         self.grad_btn.pack(side="left", padx=(4, 0))
 
         self.set_new_color(new)
-        self._paint_end_swatch()
+        self.set_end_color(end if end else (255, 255, 255))
         self.set_gradient(self.gradient)
 
     def destroy(self):
@@ -248,38 +260,55 @@ class MappingRow:
         on = bool(on)
         if on and not self._grad_shown:
             self.end_swatch.grid(row=self.grid_row, column=8, padx=4)
+            for i, entry in enumerate(self.end_entries):
+                entry.grid(row=self.grid_row, column=9 + i, padx=1, pady=1)
             self._grad_shown = True
         elif not on and self._grad_shown:
             self.end_swatch.grid_remove()
+            for entry in self.end_entries:
+                entry.grid_remove()
             self._grad_shown = False
         self.gradient = on
         self.grad_btn.config(relief="sunken" if on else "flat")
 
     def pick_end_color(self):
-        hexcode = "#%02x%02x%02x" % self._end
+        hexcode = "#%02x%02x%02x" % self.get_end_color()
         chosen = colorchooser.askcolor(initialcolor=hexcode)
         if chosen and chosen[0]:
             self.set_end_color(tuple(int(c) for c in chosen[0]))
 
+    def _on_end_rgb_typed(self, *_):
+        if self.updating:
+            return
+        self._clamp(self.end_vars)
+        self._paint_end_swatch()
+
     def get_end_color(self):
-        return self._end
+        vals = []
+        for var in self.end_vars:
+            txt = var.get()
+            n = int(txt) if txt.isdigit() else 0
+            vals.append(max(0, min(255, n)))
+        return tuple(vals)
 
     def set_end_color(self, color):
-        self._end = tuple(int(v) for v in color[:3])
+        self.updating = True
+        for var, v in zip(self.end_vars, color):
+            var.set(str(v))
+        self.updating = False
         self._paint_end_swatch()
 
     def _paint_end_swatch(self):
-        self.end_swatch.config(bg="#%02x%02x%02x" % self._end)
+        self.end_swatch.config(bg="#%02x%02x%02x" % self.get_end_color())
 
     def snapshot(self):
         """The movable 'new' side of the row: color, gradient end, flag."""
-        return (self.get_new_color(), self._end, self.gradient)
+        return (self.get_new_color(), self.get_end_color(), self.gradient)
 
     def restore(self, snap):
         color, end, gradient = snap
         self.set_new_color(color)
-        self._end = tuple(end)
-        self._paint_end_swatch()
+        self.set_end_color(end)
         self.set_gradient(gradient)
 
     def _on_new_rgb_typed(self, *_):
@@ -323,7 +352,7 @@ class PaletteSwapStudio(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Palette Swap Studio")
-        self.minsize(1160, 700)
+        self.minsize(1280, 700)
 
         self.palettes = load_palettes()
         self.source_image = None
@@ -383,12 +412,17 @@ class PaletteSwapStudio(tk.Tk):
                  ).grid(row=0, column=0, columnspan=3, sticky="ew")
         tk.Label(self.table_frame, text="New palette",
                  font=("", 9, "bold")
-                 ).grid(row=0, column=5, columnspan=4, sticky="ew")
+                 ).grid(row=0, column=5, columnspan=3, sticky="ew")
+        tk.Label(self.table_frame, text="Gradient end",
+                 font=("", 9, "bold")
+                 ).grid(row=0, column=9, columnspan=3, sticky="ew")
         for col, channel in enumerate(("R", "G", "B")):
             tk.Label(self.table_frame, text=channel, fg="#666"
                      ).grid(row=1, column=col)
             tk.Label(self.table_frame, text=channel, fg="#666"
                      ).grid(row=1, column=5 + col)
+            tk.Label(self.table_frame, text=channel, fg="#666"
+                     ).grid(row=1, column=9 + col)
         tk.Label(self.table_frame, text="\u2192", fg="#666"
                  ).grid(row=1, column=8)
 
