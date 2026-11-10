@@ -26,17 +26,26 @@ Palette Swap Studio — a small Tkinter GUI to apply new color schemes
    the small original preview at the bottom-left). **Apply & Save PNG**
    writes the remapped image to disk.
 
-## Gradients
+## Gradients (per color)
 
 Press the ∇ button on a mapping row to turn its new color into a gradient
 across the image. The row's new color is the gradient start; the end color
 gets its own swatch plus editable R/G/B fields (0–255) next to it — click
-the swatch to open a color picker, or type values directly. The
-**Gradient** dropdown below the table sets the direction for all gradient
-rows (left→right, right→left, top→bottom, bottom→top, diagonals). The
-preview and **Apply & Save PNG** include the gradient.
+the swatch for a color picker, or type values directly.
+
+Each gradient row has its **own direction dropdown** next to its buttons
+(left→right, right→left, top→bottom, bottom→top, diagonals), so different
+colors can gradient in different directions in one pass. A newly enabled
+row starts from the **Gradient (default)** dropdown below the table. The
+preview and **Apply & Save PNG** include the gradients.
 
 Palette entries in `palettes.json` are `[r, g, b]` triplets (or legacy
 `"#rrggbb"` hex strings); gradient rows are stored as
-`{"start": [r, g, b], "end": [r, g, b]}`. Their order maps to the image's
-colors.
+`{"start": [r, g, b], "end": [r, g, b], "dir": "left → right"}` — `dir` is
+optional and must be one of the `GRADIENT_DIRECTIONS` keys in the script.
+
+## Large images
+
+The remap loop is per-pixel Python. Set `MAX_IMAGE_PIXELS` at the top of
+`palette_swap_studio.py` to a number to refuse larger images on open
+(`None`, the default, means no limit).

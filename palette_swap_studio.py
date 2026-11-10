@@ -32,11 +32,12 @@ right, about double those dimensions.
 Gradients: press the grad button on a row to turn its new color into a
 gradient across the image. The row's new color is the gradient start;
 the end color gets its own swatch and R/G/B fields next to it (click the
-swatch to pick a color, or type R/G/B values 0-255).
-The direction is chosen once for all gradient rows with the "Gradient"
-dropdown below the mapping table, and the preview shows the result.
-Gradient rows are stored in palettes.json as
-{"start": [r, g, b], "end": [r, g, b]} and load back as gradients.
+swatch to pick a color, or type R/G/B values 0-255). Each gradient row
+has its own direction dropdown next to its buttons; a newly enabled row
+takes the direction from the "Gradient (default)" dropdown below the
+table. The preview shows the result. Gradient rows are stored in
+palettes.json as {"start": [r, g, b], "end": [r, g, b], "dir": "..."}
+("dir" optional) and load back as gradients.
 
 Dependencies: pillow  (pip install pillow)
 Run:          python palette_swap_studio.py
@@ -57,6 +58,10 @@ PALETTE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 ORIG_PREVIEW_SIZE = (480, 360)
 NEW_PREVIEW_SIZE = (960, 720)
 
+# Safety valve for very large images (remapping loops per pixel in Python).
+# None = no limit; set to a number (e.g. 4_000_000) to refuse bigger images.
+MAX_IMAGE_PIXELS = None
+
 # Directions a gradient can run across the image, as (dx, dy) in image
 # coordinates (x grows right, y grows down).
 GRADIENT_DIRECTIONS = {
@@ -73,7 +78,7 @@ GRADIENT_DIRECTIONS = {
 # Add new palettes here, or via the GUI (Save Palette / Save As New).
 # Each palette is a list of entries; order maps to the colors in the image.
 # An entry is either [R, G, B] (flat color) or, for a gradient row,
-# {"start": [R, G, B], "end": [R, G, B]}.
+# {"start": [R, G, B], "end": [R, G, B], "dir": "left \u2192 right"}.
 # ---------------------------------------------------------------------------
 DEFAULT_PALETTES = {
     "Original 16 gray": [[c, c, c] for c in range(0, 256, 17)],
@@ -96,9 +101,12 @@ DEFAULT_PALETTES = {
                       [169, 229, 176], [191, 238, 197], [214, 245, 218],
                       [234, 251, 233]],
     "Sunset gradient": [
-        {"start": [24, 10, 44], "end": [70, 18, 100]},
-        {"start": [255, 0, 0], "end": [255, 204, 0]},
-        {"start": [255, 110, 0], "end": [255, 224, 130]},
+        {"start": [24, 10, 44], "end": [70, 18, 100],
+         "dir": "top \u2192 bottom"},
+        {"start": [255, 0, 0], "end": [255, 204, 0],
+         "dir": "left \u2192 right"},
+        {"start": [255, 110, 0], "end": [255, 224, 130],
+         "dir": "diagonal \u2198"},
         [96, 24, 64], [128, 34, 74], [158, 48, 84], [186, 64, 94],
         [206, 92, 112], [224, 122, 132], [238, 152, 152], [246, 182, 172],
         [251, 208, 192], [253, 227, 212], [254, 241, 230], [255, 251, 242],
@@ -118,15 +126,21 @@ def _to_rgb(entry):
 
 
 def _parse_entry(entry):
-    """Parse one palette entry into (color, gradient_end).
+    """Parse one palette entry into (color, gradient_end, direction).
 
-    Flat entries ([r, g, b] or "#rrggbb") return (color, None). Gradient
-    entries {"start": ..., "end": ...} return (start, end).
+    Flat entries ([r, g, b] or "#rrggbb") return (color, None, None).
+    Gradient entries {"start": ..., "end": ..., "dir": ...} return
+    (start, end, dir); "dir" is optional and must be a key of
+    GRADIENT_DIRECTIONS, otherwise it is dropped (None).
     """
     if isinstance(entry, dict):
+        direction = entry.get("dir")
+        if direction not in GRADIENT_DIRECTIONS:
+            direction = None
         return (_to_rgb(entry.get("start", [0, 0, 0])),
-                _to_rgb(entry.get("end", [255, 255, 255])))
-    return _to_rgb(entry), None
+                _to_rgb(entry.get("end", [255, 255, 255])),
+                direction)
+    return _to_rgb(entry), None, None
 
 
 def load_palettes():
@@ -153,12 +167,13 @@ class MappingRow:
 
     Grid columns: 0-2 original R,G,B | 3 original square | 4 new square |
     5-7 new R,G,B | 8 gradient end square | 9-11 gradient end R,G,B |
-    12 order/remove/gradient buttons (the end square/fields are only
-    gridded on gradient rows). All rows share one grid, so everything
-    stays aligned automatically.
+    12 order/remove/gradient buttons + per-row direction dropdown. The
+    end square/fields and the dropdown are only shown on gradient rows.
+    All rows share one grid, so everything stays aligned automatically.
     """
 
-    def __init__(self, app, parent, grid_row, orig, new, end=None):
+    def __init__(self, app, parent, grid_row, orig, new, end=None,
+                 direction=None):
         self.app = app
         self.parent = parent
         self.grid_row = grid_row
@@ -235,9 +250,15 @@ class MappingRow:
         self.grad_btn = tk.Button(btns, text="\u2207", relief="flat",
                                   command=self.toggle_gradient)
         self.grad_btn.pack(side="left", padx=(4, 0))
+        # Per-row gradient direction (only shown on gradient rows)
+        self.dir_var = tk.StringVar()
+        self.dir_combo = ttk.Combobox(btns, textvariable=self.dir_var,
+                                      state="readonly", width=11,
+                                      values=list(GRADIENT_DIRECTIONS))
 
         self.set_new_color(new)
         self.set_end_color(end if end else (255, 255, 255))
+        self.set_direction(direction)
         self.set_gradient(self.gradient)
 
     def destroy(self):
@@ -262,11 +283,13 @@ class MappingRow:
             self.end_swatch.grid(row=self.grid_row, column=8, padx=4)
             for i, entry in enumerate(self.end_entries):
                 entry.grid(row=self.grid_row, column=9 + i, padx=1, pady=1)
+            self.dir_combo.pack(side="left", padx=(4, 0))
             self._grad_shown = True
         elif not on and self._grad_shown:
             self.end_swatch.grid_remove()
             for entry in self.end_entries:
                 entry.grid_remove()
+            self.dir_combo.pack_forget()
             self._grad_shown = False
         self.gradient = on
         self.grad_btn.config(relief="sunken" if on else "flat")
@@ -301,14 +324,25 @@ class MappingRow:
     def _paint_end_swatch(self):
         self.end_swatch.config(bg="#%02x%02x%02x" % self.get_end_color())
 
+    def get_direction(self):
+        d = self.dir_var.get()
+        return d if d in GRADIENT_DIRECTIONS else None
+
+    def set_direction(self, direction):
+        if direction not in GRADIENT_DIRECTIONS:
+            direction = self.app.gradient_dir_var.get()
+        self.dir_var.set(direction)
+
     def snapshot(self):
-        """The movable 'new' side of the row: color, gradient end, flag."""
-        return (self.get_new_color(), self.get_end_color(), self.gradient)
+        """The movable 'new' side of the row: color, end, flag, dir."""
+        return (self.get_new_color(), self.get_end_color(),
+                self.gradient, self.get_direction())
 
     def restore(self, snap):
-        color, end, gradient = snap
+        color, end, gradient, direction = snap
         self.set_new_color(color)
         self.set_end_color(end)
+        self.set_direction(direction)
         self.set_gradient(gradient)
 
     def _on_new_rgb_typed(self, *_):
@@ -437,7 +471,8 @@ class PaletteSwapStudio(tk.Tk):
                                      state="readonly", width=24)
         self.dropdown.pack(side="left", expand=True, fill="x")
         self.dropdown.bind("<<ComboboxSelected>>", self.on_palette_selected)
-        tk.Label(bottom, text="Gradient:").pack(side="left", padx=(18, 6))
+        tk.Label(bottom, text="Gradient (default):").pack(side="left",
+                                                            padx=(18, 6))
         ttk.Combobox(bottom, textvariable=self.gradient_dir_var,
                      state="readonly", width=13,
                      values=list(GRADIENT_DIRECTIONS)
@@ -492,6 +527,14 @@ class PaletteSwapStudio(tk.Tk):
             messagebox.showerror("Open error", str(exc))
             return
 
+        if (MAX_IMAGE_PIXELS is not None
+                and img.width * img.height > MAX_IMAGE_PIXELS):
+            messagebox.showwarning(
+                "Open",
+                f"Image has {img.width * img.height} pixels; this build "
+                f"allows at most {MAX_IMAGE_PIXELS}.")
+            return
+
         colors = sorted(set(img.getdata()))[:MAX_COLORS]
         if not colors:
             messagebox.showerror("Open error", "No colors found.")
@@ -503,26 +546,31 @@ class PaletteSwapStudio(tk.Tk):
         news = [row.get_new_color() for row in self.rows]
         ends = [row.get_end_color() if row.gradient else None
                 for row in self.rows]
+        dirs = [row.get_direction() if row.gradient else None
+                for row in self.rows]
         n = max(len(colors), len(news))
         origs = list(colors) + [None] * (n - len(colors))
         news += [(0, 0, 0)] * (n - len(news))
         ends += [None] * (n - len(ends))
-        self._rebuild_table(origs, news, ends)
+        dirs += [None] * (n - len(dirs))
+        self._rebuild_table(origs, news, ends, dirs)
         self._clear_preview()
         self.status.config(text=f"{os.path.basename(path)} \u2014 "
                                 f"{len(colors)} unique colors")
 
     # ------------------------------------------------------------ table
-    def _rebuild_table(self, origs, news, ends=None):
+    def _rebuild_table(self, origs, news, ends=None, dirs=None):
         for row in self.rows:
             row.destroy()
         self.rows = []
         ends = list(ends) if ends else [None] * len(news)
+        dirs = list(dirs) if dirs else [None] * len(news)
         for i in range(len(origs)):
             end = ends[i] if i < len(ends) else None
+            direction = dirs[i] if i < len(dirs) else None
             self.rows.append(MappingRow(self, self.table_frame,
                                         len(self.rows) + self.HEADER_ROWS,
-                                        origs[i], news[i], end))
+                                        origs[i], news[i], end, direction))
 
     def add_mapping_row(self):
         orig = (self.original_colors[len(self.rows)]
@@ -539,10 +587,13 @@ class PaletteSwapStudio(tk.Tk):
         news = [r.get_new_color() for r in self.rows]
         ends = [r.get_end_color() if r.gradient else None
                 for r in self.rows]
+        dirs = [r.get_direction() if r.gradient else None
+                for r in self.rows]
         del origs[idx]
         del news[idx]
         del ends[idx]
-        self._rebuild_table(origs, news, ends)
+        del dirs[idx]
+        self._rebuild_table(origs, news, ends, dirs)
 
     def move_new_color(self, row, delta):
         """Move a row's new color up (-1) or down (+1) between rows.
@@ -575,13 +626,14 @@ class PaletteSwapStudio(tk.Tk):
         """Return the new colors as palette entries.
 
         Flat rows become [R, G, B] lists; gradient rows become
-        {"start": [R, G, B], "end": [R, G, B]} dicts.
+        {"start": [R, G, B], "end": [R, G, B], "dir": ...} dicts.
         """
         entries = []
         for r in self.rows:
             color = list(r.get_new_color())
             if r.gradient:
-                entries.append({"start": color, "end": list(r.get_end_color())})
+                entries.append({"start": color, "end": list(r.get_end_color()),
+                                "dir": r.get_direction()})
             else:
                 entries.append(color)
         return entries
@@ -590,14 +642,16 @@ class PaletteSwapStudio(tk.Tk):
         name = self.palette_var.get()
         entries = list(self.palettes.get(name, [])) or [(0, 0, 0)]
         parsed = [_parse_entry(e) for e in entries]
-        news = [color for color, _end in parsed]
-        ends = [end for _color, end in parsed]
+        news = [color for color, _end, _dir in parsed]
+        ends = [end for _color, end, _dir in parsed]
+        dirs = [d for _color, _end, d in parsed]
         origs = list(self.original_colors) if self.source_image else []
         n = max(len(origs), len(news))
         origs += [None] * (n - len(origs))
         news += [(0, 0, 0)] * (n - len(news))
         ends += [None] * (n - len(ends))
-        self._rebuild_table(origs, news, ends)
+        dirs += [None] * (n - len(dirs))
+        self._rebuild_table(origs, news, ends, dirs)
 
     def save_palette(self):
         name = self.palette_var.get().strip()
@@ -623,36 +677,44 @@ class PaletteSwapStudio(tk.Tk):
         if not self.source_image:
             return None
         flat = {}
-        grads = []  # (original color, gradient start, gradient end)
+        grads = []  # (original color, start, end, direction key)
         for row in self.rows:
             if row.orig is None:
                 continue
             if row.gradient:
                 grads.append((row.orig, row.get_new_color(),
-                              row.get_end_color()))
+                              row.get_end_color(), row.get_direction()))
             else:
                 flat[row.orig] = row.get_new_color()
 
         img = self.source_image.copy()
         pix = img.load()
         w, h = img.size
-        if grads:
-            dx, dy = GRADIENT_DIRECTIONS[self.gradient_dir_var.get()]
-            # Extent of the image along the gradient direction, so the
-            # gradient spans the whole image from one edge to the other.
+        # Per-direction projection ranges, computed once: for each
+        # direction the gradient spans the whole image edge to edge.
+        default_dir = self.gradient_dir_var.get()
+        dir_params = {}  # direction key -> (dx, dy, pmin, span)
+        for _o, _s, _e, dkey in grads:
+            key = dkey if dkey in GRADIENT_DIRECTIONS else default_dir
+            if key in dir_params:
+                continue
+            dx, dy = GRADIENT_DIRECTIONS[key]
             projs = [x * dx + y * dy
                      for x, y in ((0, 0), (w - 1, 0), (0, h - 1),
                                   (w - 1, h - 1))]
             pmin, pmax = min(projs), max(projs)
-            span = (pmax - pmin) or 1
+            dir_params[key] = (dx, dy, pmin, (pmax - pmin) or 1)
         for y in range(h):
             for x in range(w):
                 c = pix[x, y]
                 if c in flat:
                     pix[x, y] = flat[c]
                 elif grads:
-                    for orig, start, end in grads:
+                    for orig, start, end, dkey in grads:
                         if c == orig:
+                            key = (dkey if dkey in GRADIENT_DIRECTIONS
+                                   else default_dir)
+                            dx, dy, pmin, span = dir_params[key]
                             t = (x * dx + y * dy - pmin) / span
                             t = min(1.0, max(0.0, t))
                             pix[x, y] = tuple(
