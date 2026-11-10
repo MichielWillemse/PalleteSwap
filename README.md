@@ -29,8 +29,9 @@ Palette Swap Studio — a small Tkinter GUI to apply new color schemes
 ## Gradients
 
 Press the ∇ button on a mapping row to turn its new color into a gradient
-across the image. The row's new color is the gradient start; the small
-swatch that appears next to it (click to change) is the end color. The
+across the image. The row's new color is the gradient start; the end color
+gets its own swatch plus editable R/G/B fields (0–255) next to it — click
+the swatch to open a color picker, or type values directly. The
 **Gradient** dropdown below the table sets the direction for all gradient
 rows (left→right, right→left, top→bottom, bottom→top, diagonals). The
 preview and **Apply & Save PNG** include the gradient.
