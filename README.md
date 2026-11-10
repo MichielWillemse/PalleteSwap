@@ -26,5 +26,16 @@ Palette Swap Studio — a small Tkinter GUI to apply new color schemes
    the small original preview at the bottom-left). **Apply & Save PNG**
    writes the remapped image to disk.
 
+## Gradients
+
+Press the ∇ button on a mapping row to turn its new color into a gradient
+across the image. The row's new color is the gradient start; the small
+swatch that appears next to it (click to change) is the end color. The
+**Gradient** dropdown below the table sets the direction for all gradient
+rows (left→right, right→left, top→bottom, bottom→top, diagonals). The
+preview and **Apply & Save PNG** include the gradient.
+
 Palette entries in `palettes.json` are `[r, g, b]` triplets (or legacy
-`"#rrggbb"` hex strings); their order maps to the image's colors.
+`"#rrggbb"` hex strings); gradient rows are stored as
+`{"start": [r, g, b], "end": [r, g, b]}`. Their order maps to the image's
+colors.
